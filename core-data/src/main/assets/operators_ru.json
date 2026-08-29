@@ -1,0 +1,12 @@
+[
+  {"mnc":1,"name":"МТС","isVirtual":false},
+  {"mnc":2,"name":"МегаФон","isVirtual":false},
+  {"mnc":20,"name":"Теле2","isVirtual":false},
+  {"mnc":99,"name":"Билайн","isVirtual":false},
+  {"mnc":11,"name":"Yota","isVirtual":true},
+  {"mnc":32,"name":"СберМобайл","isVirtual":true},
+  {"mnc":33,"name":"Тинькофф Мобайл","isVirtual":true},
+  {"mnc":54,"name":"Волна мобайл","isVirtual":false},
+  {"mnc":56,"name":"К-Телеком","isVirtual":false},
+  {"mnc":58,"name":"Севтелеком","isVirtual":false}
+]
