@@ -83,7 +83,7 @@ class CellDataCollector(
             return@callbackFlow
         }
         val callback = object : TelephonyCallback(), TelephonyCallback.PhysicalChannelConfigListener {
-            override fun onPhysicalChannelConfigChanged(configs: MutableList<PhysicalChannelConfig>) {
+            override fun onPhysicalChannelConfigChanged(configs: List<PhysicalChannelConfig>) {
                 trySend(configs.map(::carrier))
             }
         }
@@ -94,7 +94,7 @@ class CellDataCollector(
     @SuppressLint("MissingPermission")
     private fun requestUpdate(publish: (List<CellInfo>) -> Unit, closed: AtomicBoolean) {
         telephony.requestCellInfoUpdate(executor, object : TelephonyManager.CellInfoCallback() {
-            override fun onCellInfo(cellInfo: MutableList<CellInfo>) {
+            override fun onCellInfo(cellInfo: List<CellInfo>) {
                 publish(cellInfo)
                 if (!closed.get()) {
                     mainHandler.postDelayed({ requestUpdate(publish, closed) }, UPDATE_INTERVAL_MS)
@@ -118,9 +118,7 @@ class CellDataCollector(
         if (!hasLte || !hasNr) return parsed
         val group = "nsa-$timestamp"
         return parsed.map {
-            if (it.networkType == TelephonyManager.NETWORK_TYPE_LTE || it.networkType == TelephonyManager.NETWORK_TYPE_NR) {
-                it.copy(nsaGroupId = group)
-            } else it
+            if (it.networkType == TelephonyManager.NETWORK_TYPE_LTE || it.networkType == TelephonyManager.NETWORK_TYPE_NR) it.copy(nsaGroupId = group) else it
         }
     }
 
@@ -135,41 +133,10 @@ class CellDataCollector(
         var pci: Int? = null
         var tac: Int? = null
         when (info) {
-            is CellInfoGsm -> {
-                networkType = TelephonyManager.NETWORK_TYPE_GSM
-                val id = identity as CellIdentityGsm
-                mcc = id.mcc.takeUnless { it == CellInfo.UNAVAILABLE }
-                mnc = id.mnc.takeUnless { it == CellInfo.UNAVAILABLE }
-                lac = id.lac.takeUnless { it == CellInfo.UNAVAILABLE }
-                cid = id.cid.takeUnless { it == CellInfo.UNAVAILABLE }?.toLong()
-            }
-            is CellInfoWcdma -> {
-                networkType = TelephonyManager.NETWORK_TYPE_UMTS
-                val id = identity as CellIdentityWcdma
-                mcc = id.mcc.takeUnless { it == CellInfo.UNAVAILABLE }
-                mnc = id.mnc.takeUnless { it == CellInfo.UNAVAILABLE }
-                lac = id.lac.takeUnless { it == CellInfo.UNAVAILABLE }
-                cid = id.cid.takeUnless { it == CellInfo.UNAVAILABLE }?.toLong()
-                pci = id.psc.takeUnless { it == CellInfo.UNAVAILABLE }
-            }
-            is CellInfoLte -> {
-                networkType = TelephonyManager.NETWORK_TYPE_LTE
-                val id = identity as CellIdentityLte
-                mcc = id.mcc.takeUnless { it == CellInfo.UNAVAILABLE }
-                mnc = id.mnc.takeUnless { it == CellInfo.UNAVAILABLE }
-                cid = id.ci.takeUnless { it == CellInfo.UNAVAILABLE }?.toLong()
-                pci = id.pci.takeUnless { it == CellInfo.UNAVAILABLE }
-                tac = id.tac.takeUnless { it == CellInfo.UNAVAILABLE }
-            }
-            is CellInfoNr -> {
-                networkType = TelephonyManager.NETWORK_TYPE_NR
-                val id = identity as CellIdentityNr
-                mcc = id.mccString?.toIntOrNull()
-                mnc = id.mncString?.toIntOrNull()
-                cid = id.nci.takeUnless { it == CellInfo.UNAVAILABLE.toLong() }
-                pci = id.pci.takeUnless { it == CellInfo.UNAVAILABLE }
-                tac = id.tac.takeUnless { it == CellInfo.UNAVAILABLE }
-            }
+            is CellInfoGsm -> { networkType = TelephonyManager.NETWORK_TYPE_GSM; val id = identity as CellIdentityGsm; mcc = id.mcc.takeUnless { it == CellInfo.UNAVAILABLE }; mnc = id.mnc.takeUnless { it == CellInfo.UNAVAILABLE }; lac = id.lac.takeUnless { it == CellInfo.UNAVAILABLE }; cid = id.cid.takeUnless { it == CellInfo.UNAVAILABLE }?.toLong() }
+            is CellInfoWcdma -> { networkType = TelephonyManager.NETWORK_TYPE_UMTS; val id = identity as CellIdentityWcdma; mcc = id.mcc.takeUnless { it == CellInfo.UNAVAILABLE }; mnc = id.mnc.takeUnless { it == CellInfo.UNAVAILABLE }; lac = id.lac.takeUnless { it == CellInfo.UNAVAILABLE }; cid = id.cid.takeUnless { it == CellInfo.UNAVAILABLE }?.toLong(); pci = id.psc.takeUnless { it == CellInfo.UNAVAILABLE } }
+            is CellInfoLte -> { networkType = TelephonyManager.NETWORK_TYPE_LTE; val id = identity as CellIdentityLte; mcc = id.mcc.takeUnless { it == CellInfo.UNAVAILABLE }; mnc = id.mnc.takeUnless { it == CellInfo.UNAVAILABLE }; cid = id.ci.takeUnless { it == CellInfo.UNAVAILABLE }?.toLong(); pci = id.pci.takeUnless { it == CellInfo.UNAVAILABLE }; tac = id.tac.takeUnless { it == CellInfo.UNAVAILABLE } }
+            is CellInfoNr -> { networkType = TelephonyManager.NETWORK_TYPE_NR; val id = identity as CellIdentityNr; mcc = id.mccString?.toIntOrNull(); mnc = id.mncString?.toIntOrNull(); cid = id.nci.takeUnless { it == CellInfo.UNAVAILABLE.toLong() }; pci = id.pci.takeUnless { it == CellInfo.UNAVAILABLE }; tac = id.tac.takeUnless { it == CellInfo.UNAVAILABLE } }
             else -> return null
         }
         val unavailable = CellInfo.UNAVAILABLE
@@ -187,11 +154,7 @@ class CellDataCollector(
         config.physicalCellId.takeUnless { it == CellInfo.UNAVAILABLE },
     )
 
-    private fun hasPermissions(context: Context) =
-        ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED &&
-            ContextCompat.checkSelfPermission(context, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED
+    private fun hasPermissions(context: Context) = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED && ContextCompat.checkSelfPermission(context, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED
 
-    private companion object {
-        const val UPDATE_INTERVAL_MS = 2_000L
-    }
+    private companion object { const val UPDATE_INTERVAL_MS = 2_000L }
 }
