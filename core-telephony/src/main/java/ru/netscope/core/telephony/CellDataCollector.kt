@@ -1,10 +1,8 @@
 package ru.netscope.core.telephony
 
 import android.Manifest
-import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
-import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.telephony.CellIdentityGsm
@@ -16,13 +14,9 @@ import android.telephony.CellInfoGsm
 import android.telephony.CellInfoLte
 import android.telephony.CellInfoNr
 import android.telephony.CellInfoWcdma
-import android.telephony.CellSignalStrength
-import android.telephony.PhysicalChannelConfig
-import android.telephony.PhoneStateListener
-import android.telephony.TelephonyCallback
+import android.telephony.CellSignalStrengthLte
 import android.telephony.TelephonyManager
 import androidx.core.content.ContextCompat
-import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
@@ -39,8 +33,7 @@ class CellDataCollector(
     private val locationProvider: () -> LocationPoint? = { null },
 ) {
     private val telephony = context.getSystemService(TelephonyManager::class.java)
-    private val executor: Executor = context.mainExecutor
-    private val mainHandler = Handler(Looper.getMainLooper())
+    private val handler = Handler(Looper.getMainLooper())
 
     val measurements: Flow<List<CellMeasurement>> = callbackFlow {
         if (!hasPermissions(context)) {
@@ -49,65 +42,27 @@ class CellDataCollector(
         }
 
         val closed = AtomicBoolean(false)
-        fun publish(cells: List<CellInfo>) {
-            if (!closed.get()) trySend(parse(cells))
-        }
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            requestUpdate(::publish, closed)
-        } else {
-            @Suppress("DEPRECATION")
-            val listener = object : PhoneStateListener(executor) {
-                override fun onCellInfoChanged(cellInfo: MutableList<CellInfo>?) {
-                    publish(cellInfo.orEmpty())
-                }
-            }
-            @Suppress("DEPRECATION")
-            telephony.listen(listener, PhoneStateListener.LISTEN_CELL_INFO)
-            @Suppress("DEPRECATION")
-            telephony.allCellInfo?.let(::publish)
-            awaitClose {
-                closed.set(true)
+        val poll = object : Runnable {
+            override fun run() {
+                if (closed.get()) return
                 @Suppress("DEPRECATION")
-                telephony.listen(listener, PhoneStateListener.LISTEN_NONE)
+                val cells = telephony.allCellInfo.orEmpty()
+                trySend(parse(cells))
+                handler.postDelayed(this, UPDATE_INTERVAL_MS)
             }
-            return@callbackFlow
         }
-
-        awaitClose { closed.set(true) }
+        handler.post(poll)
+        awaitClose {
+            closed.set(true)
+            handler.removeCallbacks(poll)
+        }
     }.onStart { emit(emptyList()) }.distinctUntilChanged()
 
+    // Physical-channel callbacks vary between Android vendor implementations.
+    // Keep this optional stream empty until a compatible callback is available.
     val componentCarriers: Flow<List<ComponentCarrier>> = callbackFlow {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S || !hasPermissions(context)) {
-            close()
-            return@callbackFlow
-        }
-        val callback = object : TelephonyCallback(), TelephonyCallback.PhysicalChannelConfigListener {
-            override fun onPhysicalChannelConfigChanged(configs: List<PhysicalChannelConfig>) {
-                trySend(configs.map(::carrier))
-            }
-        }
-        telephony.registerTelephonyCallback(executor, callback)
-        awaitClose { telephony.unregisterTelephonyCallback(callback) }
+        awaitClose {}
     }.distinctUntilChanged()
-
-    @SuppressLint("MissingPermission")
-    private fun requestUpdate(publish: (List<CellInfo>) -> Unit, closed: AtomicBoolean) {
-        telephony.requestCellInfoUpdate(executor, object : TelephonyManager.CellInfoCallback() {
-            override fun onCellInfo(cellInfo: List<CellInfo>) {
-                publish(cellInfo)
-                if (!closed.get()) {
-                    mainHandler.postDelayed({ requestUpdate(publish, closed) }, UPDATE_INTERVAL_MS)
-                }
-            }
-
-            override fun onError(errorCode: Int, detail: Throwable?) {
-                if (!closed.get()) {
-                    mainHandler.postDelayed({ requestUpdate(publish, closed) }, UPDATE_INTERVAL_MS)
-                }
-            }
-        })
-    }
 
     private fun parse(cells: List<CellInfo>): List<CellMeasurement> {
         val timestamp = System.currentTimeMillis()
@@ -118,7 +73,9 @@ class CellDataCollector(
         if (!hasLte || !hasNr) return parsed
         val group = "nsa-$timestamp"
         return parsed.map {
-            if (it.networkType == TelephonyManager.NETWORK_TYPE_LTE || it.networkType == TelephonyManager.NETWORK_TYPE_NR) it.copy(nsaGroupId = group) else it
+            if (it.networkType == TelephonyManager.NETWORK_TYPE_LTE || it.networkType == TelephonyManager.NETWORK_TYPE_NR) {
+                it.copy(nsaGroupId = group)
+            } else it
         }
     }
 
@@ -133,28 +90,59 @@ class CellDataCollector(
         var pci: Int? = null
         var tac: Int? = null
         when (info) {
-            is CellInfoGsm -> { networkType = TelephonyManager.NETWORK_TYPE_GSM; val id = identity as CellIdentityGsm; mcc = id.mcc.takeUnless { it == CellInfo.UNAVAILABLE }; mnc = id.mnc.takeUnless { it == CellInfo.UNAVAILABLE }; lac = id.lac.takeUnless { it == CellInfo.UNAVAILABLE }; cid = id.cid.takeUnless { it == CellInfo.UNAVAILABLE }?.toLong() }
-            is CellInfoWcdma -> { networkType = TelephonyManager.NETWORK_TYPE_UMTS; val id = identity as CellIdentityWcdma; mcc = id.mcc.takeUnless { it == CellInfo.UNAVAILABLE }; mnc = id.mnc.takeUnless { it == CellInfo.UNAVAILABLE }; lac = id.lac.takeUnless { it == CellInfo.UNAVAILABLE }; cid = id.cid.takeUnless { it == CellInfo.UNAVAILABLE }?.toLong(); pci = id.psc.takeUnless { it == CellInfo.UNAVAILABLE } }
-            is CellInfoLte -> { networkType = TelephonyManager.NETWORK_TYPE_LTE; val id = identity as CellIdentityLte; mcc = id.mcc.takeUnless { it == CellInfo.UNAVAILABLE }; mnc = id.mnc.takeUnless { it == CellInfo.UNAVAILABLE }; cid = id.ci.takeUnless { it == CellInfo.UNAVAILABLE }?.toLong(); pci = id.pci.takeUnless { it == CellInfo.UNAVAILABLE }; tac = id.tac.takeUnless { it == CellInfo.UNAVAILABLE } }
-            is CellInfoNr -> { networkType = TelephonyManager.NETWORK_TYPE_NR; val id = identity as CellIdentityNr; mcc = id.mccString?.toIntOrNull(); mnc = id.mncString?.toIntOrNull(); cid = id.nci.takeUnless { it == CellInfo.UNAVAILABLE.toLong() }; pci = id.pci.takeUnless { it == CellInfo.UNAVAILABLE }; tac = id.tac.takeUnless { it == CellInfo.UNAVAILABLE } }
+            is CellInfoGsm -> {
+                networkType = TelephonyManager.NETWORK_TYPE_GSM
+                val id = identity as CellIdentityGsm
+                mcc = id.mcc.takeUnless { it == CellInfo.UNAVAILABLE }
+                mnc = id.mnc.takeUnless { it == CellInfo.UNAVAILABLE }
+                lac = id.lac.takeUnless { it == CellInfo.UNAVAILABLE }
+                cid = id.cid.takeUnless { it == CellInfo.UNAVAILABLE }?.toLong()
+            }
+            is CellInfoWcdma -> {
+                networkType = TelephonyManager.NETWORK_TYPE_UMTS
+                val id = identity as CellIdentityWcdma
+                mcc = id.mcc.takeUnless { it == CellInfo.UNAVAILABLE }
+                mnc = id.mnc.takeUnless { it == CellInfo.UNAVAILABLE }
+                lac = id.lac.takeUnless { it == CellInfo.UNAVAILABLE }
+                cid = id.cid.takeUnless { it == CellInfo.UNAVAILABLE }?.toLong()
+                pci = id.psc.takeUnless { it == CellInfo.UNAVAILABLE }
+            }
+            is CellInfoLte -> {
+                networkType = TelephonyManager.NETWORK_TYPE_LTE
+                val id = identity as CellIdentityLte
+                mcc = id.mcc.takeUnless { it == CellInfo.UNAVAILABLE }
+                mnc = id.mnc.takeUnless { it == CellInfo.UNAVAILABLE }
+                cid = id.ci.takeUnless { it == CellInfo.UNAVAILABLE }?.toLong()
+                pci = id.pci.takeUnless { it == CellInfo.UNAVAILABLE }
+                tac = id.tac.takeUnless { it == CellInfo.UNAVAILABLE }
+            }
+            is CellInfoNr -> {
+                networkType = TelephonyManager.NETWORK_TYPE_NR
+                val id = identity as CellIdentityNr
+                mcc = id.mccString?.toIntOrNull()
+                mnc = id.mncString?.toIntOrNull()
+                cid = id.nci.takeUnless { it == CellInfo.UNAVAILABLE.toLong() }
+                pci = id.pci.takeUnless { it == CellInfo.UNAVAILABLE }
+                tac = id.tac.takeUnless { it == CellInfo.UNAVAILABLE }
+            }
             else -> return null
         }
         val unavailable = CellInfo.UNAVAILABLE
         val rsrp = signal.dbm.takeUnless { it == unavailable }
-        val lteSignal = signal as? android.telephony.CellSignalStrengthLte
+        val lteSignal = signal as? CellSignalStrengthLte
         val operator = RussianOperators.find(mcc, mnc)?.name
-        val complete = Build.HARDWARE.isNotBlank() && mcc != null && mnc != null && cid != null && rsrp != null
-        return CellMeasurement(timestamp, point?.latitude, point?.longitude, mcc, mnc, lac, cid, pci, tac, null, rsrp, lteSignal?.rsrq, lteSignal?.rssnr, networkType, operator, complete)
+        val complete = mcc != null && mnc != null && cid != null && rsrp != null
+        return CellMeasurement(
+            timestamp, point?.latitude, point?.longitude, mcc, mnc, lac, cid, pci, tac,
+            null, rsrp, lteSignal?.rsrq, lteSignal?.rssnr, networkType, operator, complete,
+        )
     }
 
-    private fun carrier(config: PhysicalChannelConfig) = ComponentCarrier(
-        config.networkType,
-        config.downlinkChannelNumber.takeUnless { it == CellInfo.UNAVAILABLE },
-        config.getCellBandwidthDownlink().takeUnless { it == CellInfo.UNAVAILABLE },
-        config.physicalCellId.takeUnless { it == CellInfo.UNAVAILABLE },
-    )
+    private fun hasPermissions(context: Context) =
+        ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED
 
-    private fun hasPermissions(context: Context) = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED && ContextCompat.checkSelfPermission(context, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED
-
-    private companion object { const val UPDATE_INTERVAL_MS = 2_000L }
+    private companion object {
+        const val UPDATE_INTERVAL_MS = 2_000L
+    }
 }
