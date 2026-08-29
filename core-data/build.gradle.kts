@@ -1,5 +1,13 @@
 plugins { id("com.android.library"); id("org.jetbrains.kotlin.android"); id("org.jetbrains.kotlin.kapt"); id("com.google.dagger.hilt.android") }
-android { namespace = "ru.netscope.core.data"; compileSdk = 35; defaultConfig { minSdk = 26 } }
+android {
+    namespace = "ru.netscope.core.data"
+    compileSdk = 35
+    defaultConfig { minSdk = 26 }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+}
 kapt { arguments { arg("room.schemaLocation", "$projectDir/schemas") } }
 dependencies {
     implementation(project(":core-telephony"))
